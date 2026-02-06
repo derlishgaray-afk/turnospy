@@ -1,0 +1,22 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "turnospy-b3588",
+          "appId": "1:1006461383818:android:c983a4707d3975f3222973",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "turnospy-b3588",
+          "configurations": {
+            "android": "1:1006461383818:android:c983a4707d3975f3222973",
+            "web": "1:1006461383818:web:bb3ed743d69a5bb7222973"
+          }
+        }
+      }
+    }
+  }
+}
