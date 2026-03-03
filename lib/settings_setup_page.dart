@@ -15,7 +15,7 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
   final _businessNameCtrl = TextEditingController();
   final _serviceDescriptionCtrl = TextEditingController();
   final _sloganCtrl = TextEditingController();
-  final _slotCtrl = TextEditingController(text: '30');
+  final _slotCtrl = TextEditingController(text: '60');
   final _bufferCtrl = TextEditingController(text: '0');
   final ScrollController _scrollCtrl = ScrollController();
   final PageStorageBucket _scrollBucket = PageStorageBucket();
@@ -31,13 +31,38 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
 
   final _days = const ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
 
-  // Si un día está cerrado => value = null
+  // Si un dia esta cerrado => value = null
   final Map<String, Map<String, String>?> _workHours = {
-    'mon': {'start': '08:00', 'end': '18:00'},
-    'tue': {'start': '08:00', 'end': '18:00'},
-    'wed': {'start': '08:00', 'end': '18:00'},
-    'thu': {'start': '08:00', 'end': '18:00'},
-    'fri': {'start': '08:00', 'end': '18:00'},
+    'mon': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
+    'tue': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
+    'wed': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
+    'thu': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
+    'fri': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
     'sat': {'start': '08:00', 'end': '12:00'},
     'sun': null, // cerrado por defecto
   };
@@ -71,13 +96,13 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
       case 'tue':
         return 'Martes';
       case 'wed':
-        return 'Miércoles';
+        return 'Miercoles';
       case 'thu':
         return 'Jueves';
       case 'fri':
         return 'Viernes';
       case 'sat':
-        return 'Sábado';
+        return 'Sabado';
       case 'sun':
         return 'Domingo';
       default:
@@ -144,7 +169,6 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
     _ensureDayVisible(dayKey);
   }
 
-
   bool _timeOrderOk(String start, String end) {
     final s = start.split(':');
     final e = end.split(':');
@@ -171,16 +195,16 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
       final buffer = int.tryParse(_bufferCtrl.text.trim());
 
       if (slot == null || slot < 5 || slot > 240) {
-        throw Exception('Duración inválida. Usá un número entre 5 y 240.');
+        throw Exception('Duracion invalida. Usa un numero entre 5 y 240.');
       }
       if (buffer == null || buffer < 0 || buffer > 120) {
-        throw Exception('Buffer inválido. Usá un número entre 0 y 120.');
+        throw Exception('Buffer invalido. Usa un numero entre 0 y 120.');
       }
       if (_maxConcurrent < 1 || _maxConcurrent > 3) {
-        throw Exception('Simultáneos inválido. Elegí entre 1 y 3.');
+        throw Exception('Simultaneos invalido. Elegi entre 1 y 3.');
       }
 
-      // Validar horarios por día abierto
+      // Validar horarios por dia abierto
       for (final entry in _workHours.entries) {
         final day = entry.key;
         final v = entry.value;
@@ -192,7 +216,7 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
         }
         if (!_timeOrderOk(start, end)) {
           throw Exception(
-            'Horario inválido en ${_dayLabel(day)}: fin debe ser mayor a inicio.',
+            'Horario invalido en ${_dayLabel(day)}: fin debe ser mayor a inicio.',
           );
         }
       }
@@ -233,7 +257,7 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
       builder: (context) => AlertDialog(
         title: const Text('Guardar cambios'),
         content: const Text(
-          'Tenés cambios sin guardar. ¿Querés guardarlos antes de salir?',
+          'Tenes cambios sin guardar. Queres guardarlos antes de salir?',
         ),
         actions: [
           TextButton(
@@ -316,6 +340,8 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
                                   _workHours[dayKey] = {
                                     'start': '08:00',
                                     'end': '18:00',
+                                    'breakStart': '12:00',
+                                    'breakEnd': '13:00',
                                   };
                                 }
                               });
@@ -328,11 +354,15 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
               ],
             ),
             const SizedBox(height: 6),
-            Text('Horario: $start - $end',
-                style: const TextStyle(fontSize: 12)),
+            Text(
+              'Horario: $start - $end',
+              style: const TextStyle(fontSize: 12),
+            ),
             const SizedBox(height: 4),
-            Text('Descanso: ${breakLabel()}',
-                style: const TextStyle(fontSize: 12)),
+            Text(
+              'Descanso: ${breakLabel()}',
+              style: const TextStyle(fontSize: 12),
+            ),
             const SizedBox(height: 10),
 
             // Horario principal
@@ -416,7 +446,10 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
                       : () => _clearBreak(dayKey),
                   icon: const Icon(Icons.close),
                   padding: EdgeInsets.zero,
-                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                  constraints: const BoxConstraints(
+                    minWidth: 28,
+                    minHeight: 28,
+                  ),
                 ),
               ],
             ),
@@ -441,7 +474,7 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
           title: const Text('Configurar negocio'),
           actions: [
             IconButton(
-              tooltip: 'Cerrar sesión',
+              tooltip: 'Cerrar sesion',
               icon: const Icon(Icons.logout),
               onPressed: () => FirebaseAuth.instance.signOut(),
             ),
@@ -460,8 +493,13 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     const Text(
-                      'Primera vez: configurá duración, simultáneos y horarios.',
+                      'Primera vez: configura duracion, simultaneos y horarios.',
                       style: TextStyle(fontSize: 16),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      'No te preocupes si no queda perfecto ahora: despues podes editar todo desde Configuracion.',
+                      style: TextStyle(fontSize: 13),
                     ),
                     const SizedBox(height: 16),
 
@@ -478,7 +516,7 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
                       maxLines: 2,
                       onChanged: (_) => _markDirty(),
                       decoration: const InputDecoration(
-                        labelText: 'Descripción del trabajo',
+                        labelText: 'Descripcion del trabajo',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -501,7 +539,7 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
                             controller: _slotCtrl,
                             keyboardType: TextInputType.number,
                             decoration: const InputDecoration(
-                              labelText: 'Duración por defecto (min)',
+                              labelText: 'Turno (min)',
                               border: OutlineInputBorder(),
                             ),
                           ),
@@ -521,13 +559,13 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
                     ),
                     const SizedBox(height: 12),
 
-                  DropdownButtonFormField<int>(
-                    initialValue: _maxConcurrent,
-                    items: const [1, 2, 3]
-                        .map(
+                    DropdownButtonFormField<int>(
+                      initialValue: _maxConcurrent,
+                      items: const [1, 2, 3]
+                          .map(
                             (v) => DropdownMenuItem(
                               value: v,
-                              child: Text('$v simultáneo(s)'),
+                              child: Text('$v simultaneo(s)'),
                             ),
                           )
                           .toList(),
@@ -537,40 +575,40 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
                               setState(() => _maxConcurrent = v ?? 1);
                               _dirty = true;
                             },
-                    decoration: const InputDecoration(
-                      labelText: 'Atención simultánea',
-                      border: OutlineInputBorder(),
-                    ),
-                  ),
-
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<String>(
-                    initialValue: _themeMode,
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'light',
-                        child: Text('Tema claro'),
+                      decoration: const InputDecoration(
+                        labelText: 'Atencion simultanea',
+                        border: OutlineInputBorder(),
                       ),
-                      DropdownMenuItem(
-                        value: 'dark',
-                        child: Text('Tema oscuro'),
-                      ),
-                    ],
-                    onChanged: _loading
-                        ? null
-                        : (v) {
-                            setState(() => _themeMode = v ?? 'light');
-                            _dirty = true;
-                          },
-                    decoration: const InputDecoration(
-                      labelText: 'Tema',
-                      border: OutlineInputBorder(),
                     ),
-                  ),
 
-                  const SizedBox(height: 20),
-                  const Text(
-                    'Horarios por día:',
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String>(
+                      initialValue: _themeMode,
+                      items: const [
+                        DropdownMenuItem(
+                          value: 'light',
+                          child: Text('Tema claro'),
+                        ),
+                        DropdownMenuItem(
+                          value: 'dark',
+                          child: Text('Tema oscuro'),
+                        ),
+                      ],
+                      onChanged: _loading
+                          ? null
+                          : (v) {
+                              setState(() => _themeMode = v ?? 'light');
+                              _dirty = true;
+                            },
+                      decoration: const InputDecoration(
+                        labelText: 'Tema',
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Horarios por dia:',
                       style: TextStyle(fontSize: 16),
                     ),
                     const SizedBox(height: 8),
@@ -588,7 +626,7 @@ class _SettingsSetupPageState extends State<SettingsSetupPage> {
                       child: FilledButton(
                         onPressed: _loading ? null : _save,
                         child: Text(
-                          _loading ? 'Guardando...' : 'Guardar configuración',
+                          _loading ? 'Guardando...' : 'Guardar configuracion',
                         ),
                       ),
                     ),

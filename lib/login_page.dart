@@ -1,5 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+
+import 'user_access_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -9,65 +12,43 @@ class LoginPage extends StatefulWidget {
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _emailCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
-
   bool _loading = false;
   String? _error;
 
-  @override
-  void dispose() {
-    _emailCtrl.dispose();
-    _passCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _forgotPassword() async {
-    final email = _emailCtrl.text.trim();
-    if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Ingresá tu email para recuperar la contraseña.'),
-        ),
-      );
-      return;
-    }
-
-    try {
-      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Te enviamos un email para restablecer la contraseña.'),
-        ),
-      );
-    } on FirebaseAuthException catch (e) {
-      if (!mounted) return;
-      final msg = (e.code == 'user-not-found')
-          ? 'No existe una cuenta con ese email.'
-          : 'No se pudo enviar el email. Verificá el correo e intentá de nuevo.';
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-    } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Ocurrió un error. Intentá de nuevo.')),
-      );
+  String _mapAuthError(FirebaseAuthException e) {
+    switch (e.code) {
+      case 'operation-not-allowed':
+        return 'Este metodo no esta habilitado en Firebase Auth.';
+      case 'popup-closed-by-user':
+        return 'Se cancelo el inicio de sesion.';
+      case 'user-disabled':
+        return 'Esta cuenta fue deshabilitada.';
+      default:
+        return e.message ?? e.code;
     }
   }
 
-  Future<void> _signIn() async {
+  Future<void> _signInWithProvider(AuthProvider provider) async {
     setState(() {
       _loading = true;
       _error = null;
     });
 
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _emailCtrl.text.trim(),
-        password: _passCtrl.text,
-      );
+      final auth = FirebaseAuth.instance;
+      final cred = kIsWeb
+          ? await auth.signInWithPopup(provider)
+          : await auth.signInWithProvider(provider);
+
+      if (cred.user != null) {
+        try {
+          await UserAccessService.ensureUserAccessDocument(cred.user!);
+        } catch (_) {
+          // El acceso se resolvera con fallback en AuthWrapper.
+        }
+      }
     } on FirebaseAuthException catch (e) {
-      setState(() => _error = e.message ?? e.code);
+      setState(() => _error = _mapAuthError(e));
     } catch (e) {
       setState(() => _error = e.toString());
     } finally {
@@ -75,10 +56,23 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
+  Future<void> _signInWithGoogle() async {
+    final provider = GoogleAuthProvider();
+    provider.addScope('email');
+    await _signInWithProvider(provider);
+  }
+
+  Future<void> _signInWithApple() async {
+    final provider = AppleAuthProvider();
+    provider.addScope('email');
+    provider.addScope('name');
+    await _signInWithProvider(provider);
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('TurnosPY - Iniciar sesión')),
+      appBar: AppBar(title: const Text('TurnosPY - Iniciar sesion')),
       body: Center(
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 420),
@@ -87,50 +81,44 @@ class _LoginPageState extends State<LoginPage> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(
-                  controller: _emailCtrl,
-                  keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    labelText: 'Email',
-                    border: OutlineInputBorder(),
-                  ),
+                const Text(
+                  'Inicia sesion con Google o Apple. Si no tenes cuenta, se crea automaticamente.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 6),
+                const Text(
+                  'Si ya te registraste, usa el mismo proveedor para ingresar.',
+                  textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 12),
-                TextField(
-                  controller: _passCtrl,
-                  obscureText: true,
-                  decoration: const InputDecoration(
-                    labelText: 'Contraseña',
-                    border: OutlineInputBorder(),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _loading ? null : _signInWithGoogle,
+                    icon: const Icon(Icons.g_mobiledata),
+                    label: const Text('Ingresar con Google'),
                   ),
                 ),
-                const SizedBox(height: 12),
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: TextButton(
-                    onPressed: _loading ? null : _forgotPassword,
-                    child: const Text('¿Olvidaste tu contraseña?'),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    onPressed: _loading ? null : _signInWithApple,
+                    icon: const Icon(Icons.apple),
+                    label: const Text('Ingresar con Apple'),
                   ),
                 ),
-
                 if (_error != null) ...[
+                  const SizedBox(height: 12),
                   Text(
                     _error!,
                     style: const TextStyle(color: Colors.red),
                     textAlign: TextAlign.center,
                   ),
-                  const SizedBox(height: 8),
                 ],
-                SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    onPressed: _loading ? null : _signIn,
-                    child: Text(_loading ? 'Ingresando...' : 'Ingresar'),
-                  ),
-                ),
-                const SizedBox(height: 10),
+                const SizedBox(height: 12),
                 const Text(
-                  'Tu cuenta debe ser creada y habilitada por el administrador.',
+                  'Al terminar los 5 dias de prueba, solicita activacion al WhatsApp +595986872691.',
                   textAlign: TextAlign.center,
                 ),
               ],

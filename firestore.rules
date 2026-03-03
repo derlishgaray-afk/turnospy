@@ -1,0 +1,45 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true;
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+
+      // El usuario puede crear su perfil inicial, pero no puede autodeclararse admin
+      // ni autohabilitarse.
+      allow create: if isOwner(userId) &&
+          !('isAdmin' in request.resource.data) &&
+          (
+            !('isActive' in request.resource.data) ||
+            request.resource.data.isActive == false
+          );
+
+      // Un usuario normal no puede cambiar isAdmin/isActive/trial*.
+      allow update: if isAdmin() || (
+        isOwner(userId) &&
+        request.resource.data.isAdmin == resource.data.isAdmin &&
+        request.resource.data.isActive == resource.data.isActive &&
+        request.resource.data.trialStartedAt == resource.data.trialStartedAt &&
+        request.resource.data.trialEndsAt == resource.data.trialEndsAt
+      );
+
+      allow delete: if isAdmin();
+
+      match /{document=**} {
+        allow read, write: if isOwner(userId) || isAdmin();
+      }
+    }
+  }
+}

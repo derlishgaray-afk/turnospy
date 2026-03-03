@@ -1,4 +1,4 @@
-﻿import 'dart:js_interop';
+import 'dart:js_interop';
 import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -13,8 +13,10 @@ import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'admin_users_page.dart';
 import 'settings_page.dart';
 import 'financial_balance_page.dart';
+import 'user_guide_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -24,6 +26,8 @@ class HomePage extends StatefulWidget {
 }
 
 enum _Filter { all, libre, confirmado, concretado, cancelado }
+
+enum _HomeMenuAction { guide, signOut }
 
 class _TimeSeg {
   final DateTime start;
@@ -666,8 +670,7 @@ class _HomePageState extends State<HomePage> {
     final viewInsets = media.viewInsets;
     final maxWidth = math.min(420.0, size.width - 40);
     final verticalInset = 24.0 * 2;
-    final availableHeight =
-        size.height - viewInsets.bottom - verticalInset;
+    final availableHeight = size.height - viewInsets.bottom - verticalInset;
     final dialogHeight = math.min(520.0, math.max(0.0, availableHeight));
 
     return Dialog(
@@ -699,8 +702,9 @@ class _HomePageState extends State<HomePage> {
                 builder: (context, constraints) => SingleChildScrollView(
                   padding: const EdgeInsets.fromLTRB(24, 12, 24, 8),
                   child: ConstrainedBox(
-                    constraints:
-                        BoxConstraints(minHeight: constraints.maxHeight),
+                    constraints: BoxConstraints(
+                      minHeight: constraints.maxHeight,
+                    ),
                     child: body,
                   ),
                 ),
@@ -811,24 +815,26 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    final doc = await FirebaseFirestore.instance
+    final appointmentsRef = FirebaseFirestore.instance
         .collection('users')
         .doc(uid)
-        .collection('appointments')
-        .add({
-          'startAt': Timestamp.fromDate(startAt),
-          'durationMinutes': duration,
-          'clientName': clientName,
-          'notes': notesCtrl.text.trim(),
-          'status': 'confirmed', // confirmed | completed | canceled
-          'amountPaid': null,
-          'currency': 'PYG',
-          'paidAt': null,
-          'canceledAt': null,
-          'canceledByUid': null,
-          'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
+        .collection('appointments');
+    final doc = appointmentsRef.doc();
+
+    final saveFuture = doc.set({
+      'startAt': Timestamp.fromDate(startAt),
+      'durationMinutes': duration,
+      'clientName': clientName,
+      'notes': notesCtrl.text.trim(),
+      'status': 'confirmed', // confirmed | completed | canceled
+      'amountPaid': null,
+      'currency': 'PYG',
+      'paidAt': null,
+      'canceledAt': null,
+      'canceledByUid': null,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
 
     if (action == 'save_whatsapp') {
       final msg = _buildWhatsappConfirmMessage(
@@ -838,8 +844,17 @@ class _HomePageState extends State<HomePage> {
         duration: duration,
         notes: notesCtrl.text.trim(),
       );
-      await _openWhatsApp(message: msg);
+      // iOS web es estricto con popups fuera de gesto de usuario.
+      if (kIsWeb) {
+        await _openWhatsApp(message: msg);
+        await saveFuture;
+      } else {
+        await saveFuture;
+        await _openWhatsApp(message: msg);
+      }
       await doc.update({'whatsappSentAt': FieldValue.serverTimestamp()});
+    } else {
+      await saveFuture;
     }
   }
 
@@ -863,6 +878,7 @@ class _HomePageState extends State<HomePage> {
     required String uid,
     required String businessName,
     required _Appt appt,
+    required int maxConcurrent,
   }) async {
     final nameCtrl = TextEditingController(text: appt.clientName);
     final notesCtrl = TextEditingController(text: appt.notes);
@@ -873,6 +889,134 @@ class _HomePageState extends State<HomePage> {
     int duration = appt.durationMinutes;
     String status = appt.status;
     DateTime startAt = appt.start;
+
+    Future<bool> hasCapacityAt({
+      required DateTime newStart,
+      required int newDuration,
+    }) async {
+      final newEnd = newStart.add(Duration(minutes: newDuration));
+      final dayStart = DateTime(newStart.year, newStart.month, newStart.day);
+      final dayEnd = dayStart.add(const Duration(days: 1));
+
+      final snap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('appointments')
+          .where(
+            'startAt',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(dayStart),
+          )
+          .where('startAt', isLessThan: Timestamp.fromDate(dayEnd))
+          .get();
+
+      final used = snap.docs
+          .where((d) => d.id != appt.id)
+          .map((d) {
+            final data = d.data();
+            final ts = data['startAt'] as Timestamp?;
+            final start = ts?.toDate();
+            final dur = (data['durationMinutes'] as num?)?.toInt() ?? 60;
+            final end = (start == null)
+                ? null
+                : start.add(Duration(minutes: dur));
+            final st = (data['status'] ?? 'confirmed').toString();
+            return (start: start, end: end, status: st);
+          })
+          .where((a) => a.start != null && a.end != null)
+          .where((a) => a.status != 'canceled')
+          .where((a) => _overlaps(newStart, newEnd, a.start!, a.end!))
+          .length;
+
+      return used < maxConcurrent;
+    }
+
+    Map<String, dynamic>? settingsCache;
+    Future<Map<String, dynamic>?> loadSettings() async {
+      if (settingsCache != null) return settingsCache;
+      final snap = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .collection('settings')
+          .doc('default')
+          .get();
+      final data = snap.data();
+      if (data == null) return null;
+      settingsCache = data;
+      return settingsCache;
+    }
+
+    bool sameMinute(DateTime a, DateTime b) {
+      return a.year == b.year &&
+          a.month == b.month &&
+          a.day == b.day &&
+          a.hour == b.hour &&
+          a.minute == b.minute;
+    }
+
+    Future<bool> isEnabledBySchedule({
+      required DateTime newStart,
+      required int newDuration,
+    }) async {
+      final settings = await loadSettings();
+      if (settings == null) return false;
+
+      final workHoursRaw = settings['workHours'];
+      final workHours = (workHoursRaw is Map)
+          ? Map<String, dynamic>.from(workHoursRaw)
+          : <String, dynamic>{};
+
+      final dayCfgRaw = workHours[_dayKeyFromDate(newStart)];
+      if (dayCfgRaw == null) return false;
+
+      final dayCfg = (dayCfgRaw is Map)
+          ? Map<String, dynamic>.from(dayCfgRaw)
+          : <String, dynamic>{};
+
+      final enabled = (dayCfg['enabled'] is bool)
+          ? (dayCfg['enabled'] as bool)
+          : true;
+      if (!enabled) return false;
+
+      final startStr = dayCfg['start']?.toString() ?? '';
+      final endStr = dayCfg['end']?.toString() ?? '';
+      if (startStr.isEmpty || endStr.isEmpty) return false;
+
+      final segs = _segmentsForDay(
+        newStart,
+        startStr: startStr,
+        endStr: endStr,
+        breakStartStr: (dayCfg['breakStart'] ?? dayCfg['breakStartAt'])
+            ?.toString(),
+        breakEndStr: (dayCfg['breakEnd'] ?? dayCfg['breakEndAt'])?.toString(),
+      );
+
+      final newEnd = newStart.add(Duration(minutes: newDuration));
+      final insideSegment = segs.any(
+        (seg) => !newStart.isBefore(seg.start) && !newEnd.isAfter(seg.end),
+      );
+      if (!insideSegment) return false;
+
+      final slotMinutes =
+          (settings['slotMinutesDefault'] as num?)?.toInt() ?? 60;
+      final bufferMinutes = (settings['bufferMinutes'] as num?)?.toInt() ?? 0;
+      final stepMinutes = slotMinutes + bufferMinutes;
+      if (stepMinutes <= 0) return false;
+
+      for (final seg in segs) {
+        DateTime cursor = seg.start;
+        while (true) {
+          final cursorEnd = cursor.add(Duration(minutes: newDuration));
+          if (cursorEnd.isAfter(seg.end)) break;
+          if (sameMinute(cursor, newStart)) return true;
+
+          final next = cursor.add(Duration(minutes: stepMinutes));
+          if (!next.isBefore(seg.end)) break;
+          cursor = next;
+        }
+      }
+
+      return false;
+    }
 
     Future<void> pickNewDateTime() async {
       final pickedDate = await showDatePicker(
@@ -898,13 +1042,51 @@ class _HomePageState extends State<HomePage> {
       if (pickedTime == null) return;
       if (!mounted) return;
 
-      startAt = DateTime(
+      final candidateStart = DateTime(
         pickedDate.year,
         pickedDate.month,
         pickedDate.day,
         pickedTime.hour,
         pickedTime.minute,
       );
+
+      if (_isPastSlot(candidateStart)) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No se puede reagendar a un horario pasado.'),
+          ),
+        );
+        return;
+      }
+
+      final enabledBySchedule = await isEnabledBySchedule(
+        newStart: candidateStart,
+        newDuration: duration,
+      );
+      if (!enabledBySchedule) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Ese horario no esta habilitado.')),
+        );
+        return;
+      }
+
+      if (status != 'canceled') {
+        final canSchedule = await hasCapacityAt(
+          newStart: candidateStart,
+          newDuration: duration,
+        );
+        if (!canSchedule) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Ese horario no tiene cupo.')),
+          );
+          return;
+        }
+      }
+
+      startAt = candidateStart;
     }
 
     final action = await showDialog<String?>(
@@ -956,10 +1138,7 @@ class _HomePageState extends State<HomePage> {
                     value: 'completed',
                     child: Text('Concretado'),
                   ),
-                  DropdownMenuItem(
-                    value: 'canceled',
-                    child: Text('Cancelado'),
-                  ),
+                  DropdownMenuItem(value: 'canceled', child: Text('Cancelado')),
                 ],
                 onChanged: (v) => setLocal(() => status = v ?? status),
                 decoration: const InputDecoration(
@@ -1051,23 +1230,71 @@ class _HomePageState extends State<HomePage> {
               ? {'canceledAt': null, 'canceledByUid': null}
               : <String, dynamic>{});
 
-    await FirebaseFirestore.instance
+    final isRescheduling =
+        startAt.millisecondsSinceEpoch != appt.start.millisecondsSinceEpoch;
+    if (isRescheduling && _isPastSlot(startAt)) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('No se puede reagendar a un horario pasado.'),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (isRescheduling) {
+      final enabledBySchedule = await isEnabledBySchedule(
+        newStart: startAt,
+        newDuration: duration,
+      );
+      if (!enabledBySchedule) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No se puede guardar: horario no habilitado.'),
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    if (status != 'canceled') {
+      final canSchedule = await hasCapacityAt(
+        newStart: startAt,
+        newDuration: duration,
+      );
+      if (!canSchedule) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No se puede guardar: horario sin cupo.'),
+            ),
+          );
+        }
+        return;
+      }
+    }
+
+    final apptRef = FirebaseFirestore.instance
         .collection('users')
         .doc(uid)
         .collection('appointments')
-        .doc(appt.id)
-        .update({
-          'startAt': Timestamp.fromDate(startAt),
-          'durationMinutes': duration,
-          'clientName': nameCtrl.text.trim(),
-          'notes': notesCtrl.text.trim(),
-          'status': status,
-          'amountPaid': amountPaid,
-          'currency': 'PYG',
-          'paidAt': paidAt,
-          'updatedAt': FieldValue.serverTimestamp(),
-          ...cancelFields,
-        });
+        .doc(appt.id);
+
+    final saveFuture = apptRef.update({
+      'startAt': Timestamp.fromDate(startAt),
+      'durationMinutes': duration,
+      'clientName': nameCtrl.text.trim(),
+      'notes': notesCtrl.text.trim(),
+      'status': status,
+      'amountPaid': amountPaid,
+      'currency': 'PYG',
+      'paidAt': paidAt,
+      'updatedAt': FieldValue.serverTimestamp(),
+      ...cancelFields,
+    });
 
     if (sendWhatsapp) {
       final msg = _buildWhatsappConfirmMessage(
@@ -1079,14 +1306,18 @@ class _HomePageState extends State<HomePage> {
         duration: duration,
         notes: notesCtrl.text.trim(),
       );
-      await _openWhatsApp(message: msg);
+      // iOS web es estricto con popups fuera de gesto de usuario.
+      if (kIsWeb) {
+        await _openWhatsApp(message: msg);
+        await saveFuture;
+      } else {
+        await saveFuture;
+        await _openWhatsApp(message: msg);
+      }
 
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .collection('appointments')
-          .doc(appt.id)
-          .update({'whatsappSentAt': FieldValue.serverTimestamp()});
+      await apptRef.update({'whatsappSentAt': FieldValue.serverTimestamp()});
+    } else {
+      await saveFuture;
     }
   }
 
@@ -1145,6 +1376,7 @@ class _HomePageState extends State<HomePage> {
                           uid: uid,
                           businessName: businessName,
                           appt: a,
+                          maxConcurrent: maxConcurrent,
                         );
                       },
                     );
@@ -1509,237 +1741,237 @@ class _HomePageState extends State<HomePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-              // Header compacto: icono + nombre + badge
-              Row(
-                children: [
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(16),
-                      color: iconBg,
-                    ),
-                    child: Icon(
-                      Icons.event_available,
-                      size: 30,
-                      color: iconColor,
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          name,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 44,
-                            fontWeight: FontWeight.w900,
-                            height: 1.05,
-                            color: nameColor,
-                          ),
-                        ),
-                        if (sg.isNotEmpty) ...[
-                          const SizedBox(height: 6),
-                          Text(
-                            sg,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 22,
-                              fontStyle: FontStyle.italic,
-                              fontWeight: FontWeight.w600,
-                              height: 1.1,
-                              color: sloganColor,
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 8,
-                    ),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(999),
-                      color: badgeBg,
-                      border: Border.all(color: badgeBorder),
-                    ),
-                    child: Text(
-                      'DISPONIBLES',
-                      style: TextStyle(
-                        fontWeight: FontWeight.w900,
-                        fontSize: 14,
-                        color: badgeText,
+                // Header compacto: icono + nombre + badge
+                Row(
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(16),
+                        color: iconBg,
+                      ),
+                      child: Icon(
+                        Icons.event_available,
+                        size: 30,
+                        color: iconColor,
                       ),
                     ),
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 22),
-
-              // Título (más discreto)
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 22,
-                  vertical: 16,
-                ),
-                decoration: BoxDecoration(
-                  color: card,
-                  borderRadius: BorderRadius.circular(20),
-                  boxShadow: [
-                    BoxShadow(
-                      blurRadius: 18,
-                      offset: const Offset(0, 10),
-                      color: cardShadow,
-                    ),
-                  ],
-                ),
-                child: Text(
-                  'Turnos disponibles',
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: 36,
-                    fontWeight: FontWeight.w900,
-                    height: 1.05,
-                    color: titleText,
-                  ),
-                ),
-              ),
-
-              if (desc.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Text(
-                  desc,
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 24,
-                    fontWeight: FontWeight.w600,
-                    height: 1.15,
-                    color: bodyText,
-                  ),
-                ),
-              ],
-
-              const SizedBox(height: 20),
-
-              // Bloques de días (sin scroll; recorta altura al contenido)
-              SizedBox(
-                height: daysHeight,
-                child: days.isEmpty
-                    ? Container(
-                        padding: const EdgeInsets.all(18),
-                        decoration: BoxDecoration(
-                          color: isDarkBg
-                              ? const Color(0xFF3A2C1B)
-                              : Colors.orange.withValues(alpha: 0.10),
-                          borderRadius: BorderRadius.circular(18),
-                          border: Border.all(
-                            color: isDarkBg
-                                ? const Color(0xFF8D5A2B)
-                                : Colors.orange.withValues(alpha: 0.22),
-                          ),
-                        ),
-                        child: Center(
-                          child: Text(
-                            'No hay horarios disponibles en este rango.',
-                            style: TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w800,
-                              color: isDarkBg
-                                  ? const Color(0xFFF7D7A7)
-                                  : const Color(0xFF5A3A15),
-                            ),
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      )
-                    : Column(
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          for (int i = 0; i < daysCount; i++) ...[
-                            Container(
-                              width: double.infinity,
-                              height: cardH,
-                              padding: const EdgeInsets.fromLTRB(
-                                22,
-                                18,
-                                22,
-                                18,
-                              ),
-                              decoration: BoxDecoration(
-                                color: card,
-                                borderRadius: BorderRadius.circular(22),
-                                boxShadow: [
-                                  BoxShadow(
-                                    blurRadius: 14,
-                                    offset: const Offset(0, 8),
-                                    color: cardShadow,
-                                  ),
-                                ],
-                                border: Border.all(color: cardBorder),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    days[i].title
-                                        .replaceAll('📅 ', '')
-                                        .toUpperCase(),
-                                    style: TextStyle(
-                                      fontSize: 24,
-                                      fontWeight: FontWeight.w900,
-                                      color: dayTitleColor,
-                                      letterSpacing: 0.3,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Expanded(
-                                    child: Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Text(
-                                        timesLine(days[i].lines).isEmpty
-                                            ? 'Sin cupos'
-                                            : timesLine(days[i].lines),
-                                        maxLines: 2,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(
-                                          fontSize: 28,
-                                          fontWeight: FontWeight.w800,
-                                          height: 1.10,
-                                          color: timesColor,
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
+                          Text(
+                            name,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 44,
+                              fontWeight: FontWeight.w900,
+                              height: 1.05,
+                              color: nameColor,
+                            ),
+                          ),
+                          if (sg.isNotEmpty) ...[
+                            const SizedBox(height: 6),
+                            Text(
+                              sg,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontStyle: FontStyle.italic,
+                                fontWeight: FontWeight.w600,
+                                height: 1.1,
+                                color: sloganColor,
                               ),
                             ),
-                            if (i < daysCount - 1)
-                              const SizedBox(height: cardGap),
                           ],
                         ],
                       ),
-              ),
-
-              const SizedBox(height: 8),
-              Text(
-                '📲 Para reservar: escribinos por WhatsApp / mensaje directo.',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: isDarkBg
-                      ? Colors.white.withValues(alpha: 0.6)
-                      : Colors.black.withValues(alpha: 0.65),
+                    ),
+                    const SizedBox(width: 12),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(999),
+                        color: badgeBg,
+                        border: Border.all(color: badgeBorder),
+                      ),
+                      child: Text(
+                        'DISPONIBLES',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w900,
+                          fontSize: 14,
+                          color: badgeText,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              ),
+
+                const SizedBox(height: 22),
+
+                // Título (más discreto)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 22,
+                    vertical: 16,
+                  ),
+                  decoration: BoxDecoration(
+                    color: card,
+                    borderRadius: BorderRadius.circular(20),
+                    boxShadow: [
+                      BoxShadow(
+                        blurRadius: 18,
+                        offset: const Offset(0, 10),
+                        color: cardShadow,
+                      ),
+                    ],
+                  ),
+                  child: Text(
+                    'Turnos disponibles',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 36,
+                      fontWeight: FontWeight.w900,
+                      height: 1.05,
+                      color: titleText,
+                    ),
+                  ),
+                ),
+
+                if (desc.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    desc,
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.w600,
+                      height: 1.15,
+                      color: bodyText,
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 20),
+
+                // Bloques de días (sin scroll; recorta altura al contenido)
+                SizedBox(
+                  height: daysHeight,
+                  child: days.isEmpty
+                      ? Container(
+                          padding: const EdgeInsets.all(18),
+                          decoration: BoxDecoration(
+                            color: isDarkBg
+                                ? const Color(0xFF3A2C1B)
+                                : Colors.orange.withValues(alpha: 0.10),
+                            borderRadius: BorderRadius.circular(18),
+                            border: Border.all(
+                              color: isDarkBg
+                                  ? const Color(0xFF8D5A2B)
+                                  : Colors.orange.withValues(alpha: 0.22),
+                            ),
+                          ),
+                          child: Center(
+                            child: Text(
+                              'No hay horarios disponibles en este rango.',
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                                color: isDarkBg
+                                    ? const Color(0xFFF7D7A7)
+                                    : const Color(0xFF5A3A15),
+                              ),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        )
+                      : Column(
+                          children: [
+                            for (int i = 0; i < daysCount; i++) ...[
+                              Container(
+                                width: double.infinity,
+                                height: cardH,
+                                padding: const EdgeInsets.fromLTRB(
+                                  22,
+                                  18,
+                                  22,
+                                  18,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: card,
+                                  borderRadius: BorderRadius.circular(22),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      blurRadius: 14,
+                                      offset: const Offset(0, 8),
+                                      color: cardShadow,
+                                    ),
+                                  ],
+                                  border: Border.all(color: cardBorder),
+                                ),
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      days[i].title
+                                          .replaceAll('📅 ', '')
+                                          .toUpperCase(),
+                                      style: TextStyle(
+                                        fontSize: 24,
+                                        fontWeight: FontWeight.w900,
+                                        color: dayTitleColor,
+                                        letterSpacing: 0.3,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 10),
+                                    Expanded(
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Text(
+                                          timesLine(days[i].lines).isEmpty
+                                              ? 'Sin cupos'
+                                              : timesLine(days[i].lines),
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 28,
+                                            fontWeight: FontWeight.w800,
+                                            height: 1.10,
+                                            color: timesColor,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              if (i < daysCount - 1)
+                                const SizedBox(height: cardGap),
+                            ],
+                          ],
+                        ),
+                ),
+
+                const SizedBox(height: 8),
+                Text(
+                  '📲 Para reservar: escribinos por WhatsApp / mensaje directo.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: isDarkBg
+                        ? Colors.white.withValues(alpha: 0.6)
+                        : Colors.black.withValues(alpha: 0.65),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1977,9 +2209,9 @@ class _HomePageState extends State<HomePage> {
                             onSelected: exporting
                                 ? null
                                 : (_) => setLocal(() {
-                                      palette = presets[i].palette;
-                                      presetIndex = i;
-                                    }),
+                                    palette = presets[i].palette;
+                                    presetIndex = i;
+                                  }),
                           ),
                       ],
                     ),
@@ -1991,8 +2223,8 @@ class _HomePageState extends State<HomePage> {
                       onChanged: exporting
                           ? null
                           : (v) => updatePalette(
-                                (p) => p.copyWith(useGradient: v),
-                              ),
+                              (p) => p.copyWith(useGradient: v),
+                            ),
                     ),
                     colorRow(
                       label: 'Fondo inicio',
@@ -2000,9 +2232,7 @@ class _HomePageState extends State<HomePage> {
                       options: backgroundOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(bgStart: c),
-                              ),
+                          : (c) => updatePalette((p) => p.copyWith(bgStart: c)),
                     ),
                     if (palette.useGradient) ...[
                       const SizedBox(height: 12),
@@ -2012,9 +2242,7 @@ class _HomePageState extends State<HomePage> {
                         options: backgroundOptions,
                         onChanged: exporting
                             ? (_) {}
-                            : (c) => updatePalette(
-                                  (p) => p.copyWith(bgEnd: c),
-                                ),
+                            : (c) => updatePalette((p) => p.copyWith(bgEnd: c)),
                       ),
                     ],
                     const Divider(height: 28),
@@ -2024,9 +2252,7 @@ class _HomePageState extends State<HomePage> {
                       options: backgroundOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(card: c),
-                              ),
+                          : (c) => updatePalette((p) => p.copyWith(card: c)),
                     ),
                     const SizedBox(height: 12),
                     colorRow(
@@ -2035,9 +2261,8 @@ class _HomePageState extends State<HomePage> {
                       options: accentOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(nameColor: c),
-                              ),
+                          : (c) =>
+                                updatePalette((p) => p.copyWith(nameColor: c)),
                     ),
                     const SizedBox(height: 12),
                     colorRow(
@@ -2046,9 +2271,8 @@ class _HomePageState extends State<HomePage> {
                       options: textOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(titleText: c),
-                              ),
+                          : (c) =>
+                                updatePalette((p) => p.copyWith(titleText: c)),
                     ),
                     const SizedBox(height: 12),
                     colorRow(
@@ -2057,9 +2281,8 @@ class _HomePageState extends State<HomePage> {
                       options: textOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(bodyText: c),
-                              ),
+                          : (c) =>
+                                updatePalette((p) => p.copyWith(bodyText: c)),
                     ),
                     const SizedBox(height: 12),
                     colorRow(
@@ -2069,8 +2292,8 @@ class _HomePageState extends State<HomePage> {
                       onChanged: exporting
                           ? (_) {}
                           : (c) => updatePalette(
-                                (p) => p.copyWith(dayTitleColor: c),
-                              ),
+                              (p) => p.copyWith(dayTitleColor: c),
+                            ),
                     ),
                     const SizedBox(height: 12),
                     colorRow(
@@ -2079,9 +2302,8 @@ class _HomePageState extends State<HomePage> {
                       options: textOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(timesColor: c),
-                              ),
+                          : (c) =>
+                                updatePalette((p) => p.copyWith(timesColor: c)),
                     ),
                     const Divider(height: 28),
                     colorRow(
@@ -2090,9 +2312,7 @@ class _HomePageState extends State<HomePage> {
                       options: accentOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(badgeBg: c),
-                              ),
+                          : (c) => updatePalette((p) => p.copyWith(badgeBg: c)),
                     ),
                     const SizedBox(height: 12),
                     colorRow(
@@ -2101,9 +2321,8 @@ class _HomePageState extends State<HomePage> {
                       options: textOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(badgeText: c),
-                              ),
+                          : (c) =>
+                                updatePalette((p) => p.copyWith(badgeText: c)),
                     ),
                     const SizedBox(height: 12),
                     colorRow(
@@ -2112,9 +2331,7 @@ class _HomePageState extends State<HomePage> {
                       options: backgroundOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(iconBg: c),
-                              ),
+                          : (c) => updatePalette((p) => p.copyWith(iconBg: c)),
                     ),
                     const SizedBox(height: 12),
                     colorRow(
@@ -2123,9 +2340,8 @@ class _HomePageState extends State<HomePage> {
                       options: accentOptions,
                       onChanged: exporting
                           ? (_) {}
-                          : (c) => updatePalette(
-                                (p) => p.copyWith(iconColor: c),
-                              ),
+                          : (c) =>
+                                updatePalette((p) => p.copyWith(iconColor: c)),
                     ),
                     if (exportError != null) ...[
                       const SizedBox(height: 12),
@@ -2144,9 +2360,7 @@ class _HomePageState extends State<HomePage> {
             ),
             actions: [
               TextButton(
-                onPressed: exporting
-                    ? null
-                    : () => Navigator.pop(context),
+                onPressed: exporting ? null : () => Navigator.pop(context),
                 child: const Text('Cerrar'),
               ),
               FilledButton(
@@ -2479,6 +2693,53 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('TurnosPY'),
         actions: [
+          PopupMenuButton<_HomeMenuAction>(
+            tooltip: 'Sesion',
+            icon: const Icon(Icons.more_vert),
+            onSelected: (action) async {
+              if (action == _HomeMenuAction.guide) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const UserGuidePage()),
+                );
+                return;
+              }
+
+              if (action != _HomeMenuAction.signOut) return;
+
+              final ok = await showDialog<bool>(
+                context: context,
+                builder: (ctx) => AlertDialog(
+                  title: const Text('Cerrar sesion'),
+                  content: const Text('Seguro que queres cerrar sesion?'),
+                  actions: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(ctx, false),
+                      child: const Text('Cancelar'),
+                    ),
+                    FilledButton(
+                      onPressed: () => Navigator.pop(ctx, true),
+                      child: const Text('Cerrar sesion'),
+                    ),
+                  ],
+                ),
+              );
+
+              if (ok == true) {
+                await FirebaseAuth.instance.signOut();
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem<_HomeMenuAction>(
+                value: _HomeMenuAction.guide,
+                child: Text('Guia de uso'),
+              ),
+              PopupMenuItem<_HomeMenuAction>(
+                value: _HomeMenuAction.signOut,
+                child: Text('Cerrar sesion'),
+              ),
+            ],
+          ),
           IconButton(
             tooltip: 'Configuración',
             icon: const Icon(Icons.settings),
@@ -2486,6 +2747,28 @@ class _HomePageState extends State<HomePage> {
               Navigator.push(
                 context,
                 MaterialPageRoute(builder: (_) => const SettingsPage()),
+              );
+            },
+          ),
+          StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+            stream: FirebaseFirestore.instance
+                .collection('users')
+                .doc(user.uid)
+                .snapshots(),
+            builder: (context, adminSnap) {
+              final isAdmin =
+                  adminSnap.hasData &&
+                  adminSnap.data!.data()?['isAdmin'] == true;
+              if (!isAdmin) return const SizedBox.shrink();
+              return IconButton(
+                tooltip: 'Panel admin',
+                icon: const Icon(Icons.admin_panel_settings_outlined),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(builder: (_) => const AdminUsersPage()),
+                  );
+                },
               );
             },
           ),

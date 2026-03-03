@@ -1,6 +1,8 @@
-﻿import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+
+import 'admin_users_page.dart';
 
 enum _ExitAction { save, discard, cancel }
 
@@ -35,11 +37,36 @@ class _SettingsPageState extends State<SettingsPage> {
 
   // Si un día está cerrado => value = null
   final Map<String, Map<String, String>?> _workHours = {
-    'mon': {'start': '08:00', 'end': '18:00'},
-    'tue': {'start': '08:00', 'end': '18:00'},
-    'wed': {'start': '08:00', 'end': '18:00'},
-    'thu': {'start': '08:00', 'end': '18:00'},
-    'fri': {'start': '08:00', 'end': '18:00'},
+    'mon': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
+    'tue': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
+    'wed': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
+    'thu': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
+    'fri': {
+      'start': '08:00',
+      'end': '18:00',
+      'breakStart': '12:00',
+      'breakEnd': '13:00',
+    },
     'sat': {'start': '08:00', 'end': '12:00'},
     'sun': null,
   };
@@ -124,16 +151,29 @@ class _SettingsPageState extends State<SettingsPage> {
     if (start == null || end == null) return 12 * 60;
     final s = _toMin(start);
     final e = _toMin(end);
+    // Prioriza 12:00-13:00 cuando ese rango entra en el horario laboral.
+    if (s <= 12 * 60 && e >= 13 * 60) return 12 * 60;
     if (e <= s) return s;
     return s + ((e - s) ~/ 2);
+  }
+
+  int _defaultBreakDurationMin(Map<String, String> cfg) {
+    final start = cfg['start'];
+    final end = cfg['end'];
+    if (start == null || end == null) return 30;
+    final s = _toMin(start);
+    final e = _toMin(end);
+    if (s <= 12 * 60 && e >= 13 * 60) return 60;
+    return 30;
   }
 
   void _ensureBreakDefaults(String dayKey) {
     final cfg = _workHours[dayKey];
     if (cfg == null) return;
     final startMin = _defaultBreakStartMin(cfg);
+    final durationMin = _defaultBreakDurationMin(cfg);
     cfg['breakStart'] ??= _minToTime(startMin);
-    cfg['breakEnd'] ??= _minToTime(startMin + 30);
+    cfg['breakEnd'] ??= _minToTime(startMin + durationMin);
   }
 
   void _adjustTime(String dayKey, String field, int deltaMinutes) {
@@ -233,13 +273,13 @@ class _SettingsPageState extends State<SettingsPage> {
     _isHydrating = true;
 
     _businessNameCtrl.text = (data['businessName'] ?? '').toString();
-    _serviceDescriptionCtrl.text =
-        (data['serviceDescription'] ?? '').toString();
+    _serviceDescriptionCtrl.text = (data['serviceDescription'] ?? '')
+        .toString();
     _sloganCtrl.text = (data['slogan'] ?? '').toString();
     _themeMode = (data['themeMode'] ?? 'light').toString() == 'dark'
         ? 'dark'
         : 'light';
-    _slotCtrl.text = (data['slotMinutesDefault'] ?? 30).toString();
+    _slotCtrl.text = (data['slotMinutesDefault'] ?? 60).toString();
     _bufferCtrl.text = (data['bufferMinutes'] ?? 0).toString();
 
     final mc = data['maxConcurrentAppointments'];
@@ -387,8 +427,9 @@ class _SettingsPageState extends State<SettingsPage> {
     VoidCallback? onPlus,
   }) {
     final theme = Theme.of(context);
-    final textColor =
-        (onMinus == null && onPlus == null) ? theme.disabledColor : null;
+    final textColor = (onMinus == null && onPlus == null)
+        ? theme.disabledColor
+        : null;
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 4),
@@ -407,10 +448,7 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           Text(
             value,
-            style: TextStyle(
-              fontWeight: FontWeight.w600,
-              color: textColor,
-            ),
+            style: TextStyle(fontWeight: FontWeight.w600, color: textColor),
           ),
           IconButton(
             onPressed: onPlus,
@@ -439,10 +477,7 @@ class _SettingsPageState extends State<SettingsPage> {
 
         final dayLabel = Text(
           _dayLabel(dayKey),
-          style: const TextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w600,
-          ),
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
         );
 
         final timeControls = Wrap(
@@ -491,6 +526,8 @@ class _SettingsPageState extends State<SettingsPage> {
                           _workHours[dayKey] = {
                             'start': '08:00',
                             'end': '18:00',
+                            'breakStart': '12:00',
+                            'breakEnd': '13:00',
                           };
                         }
                       });
@@ -512,10 +549,7 @@ class _SettingsPageState extends State<SettingsPage> {
                     ],
                   ),
                   const SizedBox(height: 8),
-                  Align(
-                    alignment: Alignment.center,
-                    child: timeControls,
-                  ),
+                  Align(alignment: Alignment.center, child: timeControls),
                 ],
               )
             : Row(
@@ -571,8 +605,9 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
             IconButton(
               tooltip: 'Quitar descanso',
-              onPressed:
-                  (_loading || isClosed) ? null : () => _clearBreak(dayKey),
+              onPressed: (_loading || isClosed)
+                  ? null
+                  : () => _clearBreak(dayKey),
               icon: const Icon(Icons.close, size: 18),
               padding: EdgeInsets.zero,
               constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
@@ -627,6 +662,28 @@ class _SettingsPageState extends State<SettingsPage> {
         appBar: AppBar(
           title: const Text('Configuración'),
           actions: [
+            StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('users')
+                  .doc(FirebaseAuth.instance.currentUser!.uid)
+                  .snapshots(),
+              builder: (context, adminSnap) {
+                final isAdmin =
+                    adminSnap.hasData &&
+                    adminSnap.data!.data()?['isAdmin'] == true;
+                if (!isAdmin) return const SizedBox.shrink();
+                return IconButton(
+                  tooltip: 'Panel admin',
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const AdminUsersPage()),
+                    );
+                  },
+                  icon: const Icon(Icons.admin_panel_settings_outlined),
+                );
+              },
+            ),
             IconButton(
               tooltip: 'Guardar',
               onPressed: _loading ? null : () => _save(_settingsRef),
@@ -706,7 +763,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                 controller: _slotCtrl,
                                 keyboardType: TextInputType.number,
                                 decoration: const InputDecoration(
-                                  labelText: 'Turno por defecto (min)',
+                                  labelText: 'Turno (min)',
                                   border: OutlineInputBorder(),
                                 ),
                               ),
@@ -726,10 +783,10 @@ class _SettingsPageState extends State<SettingsPage> {
                         ),
                         const SizedBox(height: 12),
 
-                      DropdownButtonFormField<int>(
-                        initialValue: _maxConcurrent,
-                        items: const [1, 2, 3]
-                            .map(
+                        DropdownButtonFormField<int>(
+                          initialValue: _maxConcurrent,
+                          items: const [1, 2, 3]
+                              .map(
                                 (v) => DropdownMenuItem(
                                   value: v,
                                   child: Text('$v simultáneo(s)'),
@@ -738,47 +795,47 @@ class _SettingsPageState extends State<SettingsPage> {
                               .toList(),
                           onChanged: _loading
                               ? null
-                          : (v) {
-                              setState(() => _maxConcurrent = v ?? 1);
-                              _dirty = true;
-                            },
-                        decoration: const InputDecoration(
-                          labelText: 'Atención simultánea',
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-
-                      const SizedBox(height: 16),
-                      DropdownButtonFormField<String>(
-                        initialValue: _themeMode,
-                        items: const [
-                          DropdownMenuItem(
-                            value: 'light',
-                            child: Text('Tema claro'),
+                              : (v) {
+                                  setState(() => _maxConcurrent = v ?? 1);
+                                  _dirty = true;
+                                },
+                          decoration: const InputDecoration(
+                            labelText: 'Atención simultánea',
+                            border: OutlineInputBorder(),
                           ),
-                          DropdownMenuItem(
-                            value: 'dark',
-                            child: Text('Tema oscuro'),
-                          ),
-                        ],
-                        onChanged: _loading
-                            ? null
-                            : (v) {
-                                setState(() => _themeMode = v ?? 'light');
-                                _dirty = true;
-                              },
-                        decoration: const InputDecoration(
-                          labelText: 'Tema',
-                          border: OutlineInputBorder(),
                         ),
-                      ),
 
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Horarios por día:',
-                        style: TextStyle(fontSize: 16),
-                      ),
-                      const SizedBox(height: 10),
+                        const SizedBox(height: 16),
+                        DropdownButtonFormField<String>(
+                          initialValue: _themeMode,
+                          items: const [
+                            DropdownMenuItem(
+                              value: 'light',
+                              child: Text('Tema claro'),
+                            ),
+                            DropdownMenuItem(
+                              value: 'dark',
+                              child: Text('Tema oscuro'),
+                            ),
+                          ],
+                          onChanged: _loading
+                              ? null
+                              : (v) {
+                                  setState(() => _themeMode = v ?? 'light');
+                                  _dirty = true;
+                                },
+                          decoration: const InputDecoration(
+                            labelText: 'Tema',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+
+                        const SizedBox(height: 16),
+                        const Text(
+                          'Horarios por día:',
+                          style: TextStyle(fontSize: 16),
+                        ),
+                        const SizedBox(height: 10),
 
                         for (final d in _days) _dayRow(d),
 
@@ -790,7 +847,6 @@ class _SettingsPageState extends State<SettingsPage> {
                           ),
                         ],
                         const SizedBox(height: 10),
-
                       ],
                     ),
                   ),
